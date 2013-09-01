@@ -319,3 +319,15 @@ define service {
 </code></pre>
 
 
+#### Check Mongo Query
+
+This will let you run an arbitrary query against mongodb and raise an alert based on the query result.  It assumes that the query will return a single numeric value.  It respects the Nagios convention of adding a colon (':') suffix to the warning and critical limits to flip the logic.  E.g. if the warning limit is specified as "2:" then we alert when the query result is <em>less than</em> 2 (without the colon suffix, e.g. for "2", we alert when the query result is <em>greater than</em> 2).
+
+<pre><code>
+define service {
+    use                 generic-service
+    hostgroup_name          Mongo Servers
+    service_description     Check Based on Arbitrary Mongo Query
+    check_command           check_mongodb!mongo_query!27017!2!4
+}
+</code></pre>

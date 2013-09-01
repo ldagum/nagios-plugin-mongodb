@@ -133,7 +133,7 @@ def main(argv):
                  choices=['connect', 'connections', 'replication_lag', 'replication_lag_percent', 'replset_state', 'memory', 'memory_mapped', 'lock',
                           'flushing', 'last_flush_time', 'index_miss_ratio', 'databases', 'collections', 'database_size', 'database_indexes', 'collection_indexes',
                           'queues', 'oplog', 'journal_commits_in_wl', 'write_data_files', 'journaled', 'opcounters', 'current_lock', 'replica_primary', 'page_faults',
-                          'asserts', 'queries_per_second', 'page_faults', 'chunks_balance', 'connect_primary', 'collection_state', 'row_count'])
+                          'asserts', 'queries_per_second', 'page_faults', 'chunks_balance', 'connect_primary', 'collection_state', 'row_count', 'mongo_query'])
     p.add_option('--max-lag', action='store_true', dest='max_lag', default=False, help='Get max replication lag (for replication_lag action only)')
     p.add_option('--mapped-memory', action='store_true', dest='mapped_memory', default=False, help='Get mapped memory instead of resident (if resident memory can not be read)')
     p.add_option('-D', '--perf-data', action='store_true', dest='perf_data', default=False, help='Enable output of Nagios performance data')
@@ -144,6 +144,7 @@ def main(argv):
     p.add_option('-q', '--querytype', action='store', dest='query_type', default='query', help='The query type to check [query|insert|update|delete|getmore|command] from queries_per_second')
     p.add_option('-c', '--collection', action='store', dest='collection', default='admin', help='Specify the collection to check')
     p.add_option('-T', '--time', action='store', type='int', dest='sample_time', default=1, help='Time used to sample number of pages faults')
+    p.add_option('-f', '--file', action='store', dest='query_file', help='File storing mongo query to execute')
 
     options, arguments = p.parse_args()
     host = options.host
@@ -151,9 +152,10 @@ def main(argv):
     user = options.user
     passwd = options.passwd
     query_type = options.query_type
+    query_file = options.query_file
     collection = options.collection
     sample_time = options.sample_time
-    if (options.action == 'replset_state'):
+    if (options.action == 'replset_state' or options.action == 'mongo_query'):
         warning = str(options.warning or "")
         critical = str(options.critical or "")
     else:
@@ -246,6 +248,8 @@ def main(argv):
         return check_collection_state(con, database, collection)
     elif action == "row_count":
         return check_row_count(con, database, collection, warning, critical, perf_data)
+    elif action == "mongo_query":
+        return check_mongo_query(con, database, query_file, warning, critical, perf_data)
     else:
         return check_connect(host, port, warning, critical, perf_data, user, passwd, conn_time)
 
@@ -1293,6 +1297,49 @@ def check_row_count(con, database, collection, warning, critical, perf_data):
         return exit_with_general_critical(e)
 
 
+def check_mongo_query(con, database, query_file, warning, critical, perf_data):
+    # these thresholds are meaningless and should be set as part of monitor definition
+    warning = warning or "2"
+    critical = critical or "4"
+    if query_file is None:
+        return exit_with_general_critical("No mongo query file specified.  Please specify mongo query file with -f <filename>.")
+    try:
+        query = open(query_file, "r").read().replace('\n','')
+        data = con[database].eval(query)
+        # Full Nagios convention is listed below, we'll just adopt the ':' convention to flip the alert, i.e. if 
+        # warning or critical include a ':' then we'll alert when the result is less than the value
+        #
+        # Range definition            Generate an alert if x is..
+        # 10                          <0 or >10, (outside the range [0,10])
+        # 10:                         <10, (outside of [10,infinity)
+        # ~:10                        >10, (outside of (-infinity, 10])
+        # 10:20                       <10 or >20 (outside of [10,20])
+        # @10:20                      >=10 and <=20 (inside of [10,20])
+        if ":" in critical:
+            crit = float(critical.replace(":",""))
+            if data <= crit:
+                print "CRITICAL - result= %s is less than or equal to critical limit: %s for mongo query '%s' on Database: %s" % (data, crit, query, database)
+                return 2
+        if ":" in warning:
+            warn = float(warning.replace(":",""))
+            if data <= warn:
+                print "WARNING - result= %s is less than or equal to warning limit: %s for mongo query '%s' on Database: %s" % (data, warn, query, database)
+                return 1
+        if ":" not in critical:
+            if data >= float(critical):
+                print "CRITICAL - result= %s is greater than or equal to critical limit: %s for mongo query '%s' on Database: %s" % (data, float(critical), query, database)
+                return 2
+        if ":" not in warning:
+            if data >= float(warning):
+                print "WARNING - result= %s is greater than or equal to warning limit: %s for mongo query '%s' on Database: %s" % (data, float(warning), query, database)
+                return 1
+        # did not trigger alert, return OK
+        print "OK - result= %s for mongo query '%s' on Database: %s" % (data, "db.posts.count()", database)
+        return 0
+    except Exception, e:
+        return exit_with_general_critical(e)
+        
+
 def build_file_name(host, action):
     #done this way so it will work when run independently and from shell
     module_name = re.match('(.*//*)*(.*)\..*', __file__).group(2)
@@ -1382,3 +1429,4 @@ def replication_get_time_diff(con):
 #
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
+
